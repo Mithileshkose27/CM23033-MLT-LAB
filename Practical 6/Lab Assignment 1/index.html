@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Pose Detection with Timer Capture</title>
+  <style>
+    body { margin:0; background:black; color:white; text-align:center; }
+    video, canvas {
+      position:absolute;
+      left:50%;
+      transform:translateX(-50%);
+    }
+  </style>
+</head>
+<body>
+
+<h2>Stand Straight → Auto Capture 📸</h2>
+<p id="status">Waiting for pose...</p>
+
+<video id="video" width="640" height="480" autoplay playsinline></video>
+<canvas id="canvas" width="640" height="480"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+
+<script>
+let detector;
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusText = document.getElementById("status");
+
+let captured = false;
+let timerRunning = false;
+
+// Skeleton connections
+const skeleton = [
+  [5,7],[7,9],[6,8],[8,10],
+  [5,6],[5,11],[6,12],[11,12],
+  [11,13],[13,15],[12,14],[14,16]
+];
+
+// Camera setup
+async function setupCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({ video:true });
+  video.srcObject = stream;
+  return new Promise(r => video.onloadedmetadata = r);
+}
+
+// Load model
+async function loadModel() {
+  detector = await poseDetection.createDetector(
+    poseDetection.SupportedModels.MoveNet,
+    { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+  );
+}
+
+// Angle calculation
+function getAngle(A, B, C) {
+  const AB = {x: A.x - B.x, y: A.y - B.y};
+  const CB = {x: C.x - B.x, y: C.y - B.y};
+
+  const dot = AB.x * CB.x + AB.y * CB.y;
+  const magAB = Math.hypot(AB.x, AB.y);
+  const magCB = Math.hypot(CB.x, CB.y);
+
+  return Math.acos(dot / (magAB * magCB)) * (180 / Math.PI);
+}
+
+// Timer function
+function startTimer() {
+  let timeLeft = 3;
+  timerRunning = true;
+
+  const countdown = setInterval(() => {
+    statusText.innerText = "Capturing in " + timeLeft + "...";
+    timeLeft--;
+
+    if (timeLeft < 0) {
+      clearInterval(countdown);
+      statusText.innerText = "Captured!";
+      takeScreenshot();
+      timerRunning = false;
+    }
+  }, 1000);
+}
+
+// Screenshot
+function takeScreenshot() {
+  const tempCanvas = document.createElement("canvas");
+  tempCanvas.width = 640;
+  tempCanvas.height = 480;
+  const tempCtx = tempCanvas.getContext("2d");
+
+  tempCtx.drawImage(video, 0, 0, 640, 480);
+  tempCtx.drawImage(canvas, 0, 0);
+
+  const link = document.createElement("a");
+  link.download = "standing_pose.png";
+  link.href = tempCanvas.toDataURL();
+  link.click();
+}
+
+// Draw pose
+function drawPose(keypoints) {
+  // points
+  keypoints.forEach(kp => {
+    if (kp.score > 0.4) {
+      ctx.beginPath();
+      ctx.arc(kp.x, kp.y, 5, 0, 2*Math.PI);
+      ctx.fillStyle = "red";
+      ctx.fill();
+    }
+  });
+
+  // skeleton
+  skeleton.forEach(([i,j]) => {
+    const kp1 = keypoints[i];
+    const kp2 = keypoints[j];
+    if (kp1.score > 0.4 && kp2.score > 0.4) {
+      ctx.beginPath();
+      ctx.moveTo(kp1.x, kp1.y);
+      ctx.lineTo(kp2.x, kp2.y);
+      ctx.strokeStyle = "lime";
+      ctx.stroke();
+    }
+  });
+}
+
+// Detection loop
+async function detect() {
+  ctx.clearRect(0,0,640,480);
+
+  const poses = await detector.estimatePoses(video);
+
+  if (poses.length > 0) {
+    const kp = poses[0].keypoints;
+    drawPose(kp);
+
+    const hip = kp[12];
+    const knee = kp[14];
+    const ankle = kp[16];
+
+    if (hip.score > 0.4 && knee.score > 0.4 && ankle.score > 0.4) {
+      const angle = getAngle(hip, knee, ankle);
+
+      ctx.fillStyle = "yellow";
+      ctx.fillText("Angle: " + angle.toFixed(0), 20, 40);
+
+      // Standing detection
+      if (angle > 160) {
+        statusText.innerText = "Standing detected ✅";
+
+        if (!captured && !timerRunning) {
+          captured = true;
+          startTimer();
+        }
+      }
+
+      // Reset when you bend
+      if (angle < 140) {
+        captured = false;
+        statusText.innerText = "Waiting for pose...";
+      }
+    }
+  }
+
+  requestAnimationFrame(detect);
+}
+
+// Main
+(async () => {
+  await setupCamera();
+  await loadModel();
+  detect();
+})();
+</script>
+
+</body>
+</html>
